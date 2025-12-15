@@ -11,7 +11,9 @@ import uuid
 
 app = Flask(__name__)
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:wrdnsIhAOSYQZGRXmcvimPnGBTJcZyyO@shinkansen.proxy.rlwy.net:30618/railway')
+DATABASE_URL = os.environ.get('DATABASE_URL') 
+if not DATABASE_URL:
+    print("FATAL: DATABASE_URL environment variable is not set.")
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 

@@ -196,11 +196,11 @@ def update_profile(current_user):
         db.session.rollback()
         return jsonify({'status': 'error', 'message': f'Terjadi kesalahan: {str(e)}'}), 500
 
-MODEL_PATH = 'insurance_model.pkl'
 LOWER_BOUND_BMI = 21.234750000000002
 UPPER_BOUND_BMI = 40.61724999999999
 FEATURE_COLS = ['age', 'children', 'bmi_clean', 'sex_male', 'smoker_yes', 'region_northwest', 'region_southeast', 'region_southwest']
 
+MODEL_PATH = 'insurance_model.pkl'
 try:
     model = joblib.load(MODEL_PATH)
     print("Model ML berhasil dimuat.")
@@ -263,13 +263,22 @@ def predict(current_user):
             if col in FEATURE_COLS:
                 final_input[col] = data_input_encoded[col]
 
+        original_input = {
+            'age': age,
+            'bmi': bmi,
+            'children': children,
+            'sex': sex,
+            'smoker': smoker,
+            'region': region
+        }
+
         # Prediksi
         prediction_log = model.predict(final_input)
         prediction = np.expm1(prediction_log)[0]
         
         new_history = PredictionHistory(
             user_id=current_user.id,
-            input_data=data_input.iloc[0].drop('bmi_clean').to_dict(), # Simpan input asli
+            input_data=original_input,
             predicted_charges=float(prediction)
         )
         db.session.add(new_history)
@@ -316,7 +325,7 @@ def get_history(current_user):
                 'input': record.input_data,
                 'charges': f"${record.predicted_charges:,.2f}",
                 'predicted_charges_raw': record.predicted_charges,
-                'date': record.created_at.isoformat()
+                'date': record.created_at.isoformat(),
             })
         
         return jsonify({

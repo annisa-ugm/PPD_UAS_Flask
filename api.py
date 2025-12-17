@@ -11,7 +11,8 @@ import uuid
 
 app = Flask(__name__)
 
-DATABASE_URL = os.environ.get('DATABASE_URL') 
+# DATABASE_URL = os.environ.get('DATABASE_URL') 
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:wrdnsIhAOSYQZGRXmcvimPnGBTJcZyyO@shinkansen.proxy.rlwy.net:30618/railway')
 if not DATABASE_URL:
     print("FATAL: DATABASE_URL environment variable is not set.")
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
@@ -343,65 +344,90 @@ def get_history(current_user):
     except Exception as e:
         return jsonify({'status': 'error', 'message': f'Terjadi kesalahan: {str(e)}'}), 500
 
+def global_stats_default_empty():
+    return {
+        "total_global_predictions": 0,
+        "smoker_distribution": {},
+        "sex_distribution": {},
+        "top_region": "N/A",
+        "average_charges_global": "$0",
+        "avg_charges_by_smoker": {},
+        "avg_charges_by_age_group": [],
+        "scatter_plot_data": []
+    }
+
 def calculate_global_stats():
     try:
         all_history = PredictionHistory.query.all()
         
-        global_stats = {
-            "total_global_predictions": 0,
-            "smoker_distribution": {},
-            "sex_distribution": {},
-            "top_region": "N/A",
-            "average_charges_global": "$0"
-        }
-        
-        if not all_history:
-            return global_stats
-
         smokers = []
         sexes = []
         regions = []
-        
+        charges = []
+        ages = []  
+        correlation_data = []
+
         for record in all_history:
             input_data = record.input_data 
-            if input_data:
+            if input_data and record.predicted_charges is not None:
                 smokers.append(input_data.get('smoker'))
                 sexes.append(input_data.get('sex'))
                 regions.append(input_data.get('region'))
+                charges.append(record.predicted_charges)
+                ages.append(input_data.get('age'))    
 
-        df_stats = pd.DataFrame({'smoker': smokers, 'sex': sexes, 'region': regions})
+                # scatter plot (Age vs Charges vs Smoker)
+                correlation_data.append({
+                    'age': input_data.get('age'),
+                    'charges': record.predicted_charges,
+                    'smoker': input_data.get('smoker')
+                })
+
+        if not charges:
+            return global_stats_default_empty()
         
-        # Hitung Persentase Status Perokok
+        df_stats = pd.DataFrame({
+            'smoker': smokers, 
+            'sex': sexes, 
+            'region': regions, 
+            'charges': charges, 
+            'age': ages
+        })
+
         smoker_counts = df_stats['smoker'].value_counts(normalize=True).mul(100).to_dict()
-        
-        # Hitung Persentase Jenis Kelamin
         sex_counts = df_stats['sex'].value_counts(normalize=True).mul(100).to_dict()
-
-        # Hitung Wilayah Terbanyak
-        top_region = df_stats['region'].mode().iloc[0] if not df_stats.empty and len(df_stats['region'].mode()) > 0 else "N/A"
-        
-        # Rata-rata Biaya Global
+        top_region = df_stats['region'].mode().iloc[0] if len(df_stats['region'].mode()) > 0 else "N/A"
         avg_charges_global = db.session.query(db.func.avg(PredictionHistory.predicted_charges)).scalar()
         
-        global_stats.update({
+        # Rata-Rata Charges berdasarkan Smoker (Untuk Bar Chart)
+        avg_charges_by_smoker = df_stats.groupby('smoker')['charges'].mean().to_dict()
+
+        # Rata-Rata Charges berdasarkan Kelompok Usia (Untuk Bar/Line Chart)
+        bins = [18, 25, 40, 55, 100]
+        labels = ['18-25', '26-40', '41-55', '56+']
+        df_stats['age_group'] = pd.cut(df_stats['age'], bins=bins, labels=labels, right=False)
+
+        avg_charges_by_age = df_stats.groupby('age_group', observed=True)['charges'].mean().reset_index()
+        age_group_data = avg_charges_by_age.rename(columns={'age_group': 'group', 'charges': 'average_charge'}).to_dict('records')
+        
+        
+        global_stats = {
             "total_global_predictions": len(all_history),
             "smoker_distribution": {k: f"{v:.1f}%" for k, v in smoker_counts.items()},
             "sex_distribution": {k: f"{v:.1f}%" for k, v in sex_counts.items()},
             "top_region": top_region,
-            "average_charges_global": f"${avg_charges_global:,.0f}" if avg_charges_global else "$0"
-        })
+            "average_charges_global": f"${avg_charges_global:,.0f}" if avg_charges_global else "$0",
+            
+            "avg_charges_by_smoker": avg_charges_by_smoker,
+            "avg_charges_by_age_group": age_group_data,
+            "scatter_plot_data": correlation_data[:500] 
+        }
         
         return global_stats
     
     except Exception as e:
         print(f"Error calculating global stats: {str(e)}")
-        return {
-            "total_global_predictions": 0,
-            "smoker_distribution": {},
-            "sex_distribution": {},
-            "top_region": "N/A",
-            "average_charges_global": "$0"
-        }
+        return global_stats_default_empty()
 
 @app.route('/api/dashboard', methods=['GET'])
 @token_required
@@ -417,6 +443,8 @@ def get_full_dashboard(current_user):
                 'id': activity.id,
                 'charges': f"${activity.predicted_charges:,.0f}",
                 'age': activity.input_data.get('age') if activity.input_data else 'N/A',
+                'bmi': activity.input_data.get('bmi') if activity.input_data else 'N/A',
+                'smoker': activity.input_data.get('smoker') if activity.input_data else 'N/A',
                 'date': activity.created_at.strftime("%d %b %Y, %H:%M")
             })
 
@@ -428,7 +456,7 @@ def get_full_dashboard(current_user):
             "full_name": current_user.full_name,
             "username": current_user.username,
             "total_predictions_user": total_predictions,
-            "accuracy_model": f"{MODEL_R2*100:.1f}%",
+            "r2_score": f"{MODEL_R2:.2f}",
             "average_charges_user": f"${avg_charges:,.0f}" if avg_charges else "$0",
             "system_status": "Online",
             "last_updated": datetime.now().strftime("%d %b %Y, %H:%M"),
